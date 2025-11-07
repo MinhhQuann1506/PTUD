@@ -14,8 +14,8 @@ class Config:
     FACE_RECOGNITION_MODEL = 'hog'  # hoặc 'cnn' cho độ chính xác cao hơn hog
     
     # Tracking
-    #YOLO_MODEL_PATH = 'yolov8n.pt'
-    YOLO_MODEL_PATH = 'person.pt'
+    YOLO_MODEL_PATH = 'yolov8n.pt'
+    # YOLO_MODEL_PATH = 'person.pt'
     DEEPSORT_MAX_AGE = 30
     TRACKING_CONFIDENCE_THRESHOLD = 0.5
     
