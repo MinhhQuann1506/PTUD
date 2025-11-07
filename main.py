@@ -195,75 +195,50 @@ def main():
     os.makedirs('logs', exist_ok=True)
     os.makedirs('known_faces', exist_ok=True)
     
-    # Khởi tạo database
-    from app.api.routes import create_app
+    # Khởi tạo Flask app và database
     app = create_app()
     with app.app_context():
         init_db(app)
     
-    # Chọn chế độ chạy
-    print("\nChọn chế độ chạy:")
-    print("1. Chạy hệ thống camera (nhận diện + tracking)")
-    print("2. Chạy API server (dashboard)")
-    print("3. Chạy cả hai (camera + API)")
+    # Chạy API server trong thread riêng
+    api_thread = threading.Thread(target=run_api_server, args=(app,), daemon=True)
+    api_thread.start()
     
+    # Đợi API server khởi động
+    time.sleep(2)
+    print(f"API server started at http://{Config.API_HOST}:{Config.API_PORT}")
+    
+    # Khởi tạo hệ thống camera, dùng các service từ app nếu có
     try:
-        choice = input("\nNhập lựa chọn (1/2/3): ").strip()
+        face_service = getattr(app, 'face_service', None)
+        tracking_service = getattr(app, 'tracking_service', None)
+        attendance_service = getattr(app, 'attendance_service', None)
+
+        system = FaceTrackingSystem(
+            face_service=face_service,
+            tracking_service=tracking_service,
+            attendance_service=attendance_service
+        )
         
-        if choice == '1':
-            # Chỉ chạy camera
-            system = FaceTrackingSystem()
-            system.start()
-            
-        elif choice == '2':
-            # Chỉ chạy API
-            run_api_server()
-            
-        elif choice == '3':
-            # Chạy cả hai
-            # Chạy API server trong thread riêng
-            api_thread = threading.Thread(target=run_api_server, args=(app,), daemon=True)
-            api_thread.start()
-            
-            # Đợi một chút để API server khởi động
-            time.sleep(2)
-            print("API server started at http://localhost:5000")
-            
-            # Chạy camera system
-            # Reuse services from the Flask app so in-memory state is shared
-            try:
-                app_services = app
-                system = FaceTrackingSystem(
-                    face_service=getattr(app_services, 'face_service', None),
-                    tracking_service=getattr(app_services, 'tracking_service', None),
-                    attendance_service=getattr(app_services, 'attendance_service', None)
-                )
-            except Exception:
-                system = FaceTrackingSystem()
-            system.start()
-            
-        else:
-            print("Lựa chọn không hợp lệ")
-            
+        system.start()
+        
     except KeyboardInterrupt:
         print("\nHệ thống được dừng bởi người dùng")
-        print("Đang dừng tất cả processes...")
-        
-        # Dừng camera system
+    except Exception as e:
+        print(f"Lỗi khi chạy hệ thống camera: {e}")
+    finally:
+        # Dừng hệ thống camera
         if 'system' in locals():
             system.stop()
         
-        # Dừng API server nếu đang chạy
+        # Dừng API server nếu có endpoint shutdown
         try:
             import requests
-            requests.get('http://localhost:5000/shutdown', timeout=1)
-        except:
+            requests.get(f'http://{Config.API_HOST}:{Config.API_PORT}/shutdown', timeout=1)
+        except Exception:
             pass
         
         print("Tất cả processes đã được dừng!")
-        
-    except Exception as e:
-        print(f"Lỗi: {e}")
 
 if __name__ == '__main__':
     main()
