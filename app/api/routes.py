@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, render_template, send_file, make_response
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime, timedelta
@@ -6,6 +6,8 @@ import os
 import json
 import numpy as np
 import sys
+import io
+import csv
 
 # Ensure project root is on sys.path so imports like `from config import config` work
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -497,15 +499,143 @@ def create_app(config_name='default'):
             if date_to:
                 date_to = datetime.fromisoformat(date_to)
             
+            normalized_format = (format_type or 'json').lower() if format_type else 'json'
+            request_format = normalized_format if normalized_format in ('json', 'excel', 'xlsx', 'csv') else 'json'
+
             data = attendance_service.export_attendance_data(
                 date_from=date_from,
                 date_to=date_to,
-                format=format_type
+                format='json' if request_format in ('excel', 'xlsx', 'csv') else request_format
             )
-            
+
+            if request_format == 'csv':
+                output = io.StringIO()
+                writer = csv.writer(output)
+                headers = ['attendance_id', 'person_name', 'person_id', 'track_id', 'time_in', 'time_out', 'status', 'duration_minutes']
+                writer.writerow(headers)
+                for item in data:
+                    writer.writerow([
+                        item.get('attendance_id'),
+                        item.get('person_name'),
+                        item.get('person_id'),
+                        item.get('track_id'),
+                        item.get('time_in'),
+                        item.get('time_out'),
+                        item.get('status'),
+                        item.get('duration_minutes')
+                    ])
+                csv_content = output.getvalue()
+                output.close()
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                filename = f'attendance_report_{timestamp}.csv'
+                response = make_response(csv_content)
+                response.headers['Content-Disposition'] = f'attachment; filename={filename}'
+                response.headers['Content-Type'] = 'text/csv; charset=utf-8'
+                return response
+
+            if request_format in ('excel', 'xlsx'):
+                try:
+                    from openpyxl import Workbook
+                except ImportError as e:
+                    # Fallback: generate CSV if openpyxl is unavailable
+                    output = io.StringIO()
+                    writer = csv.writer(output)
+                    headers = ['attendance_id', 'person_name', 'person_id', 'track_id', 'time_in', 'time_out', 'status', 'duration_minutes']
+                    writer.writerow(headers)
+                    for item in data:
+                        writer.writerow([
+                            item.get('attendance_id'),
+                            item.get('person_name'),
+                            item.get('person_id'),
+                            item.get('track_id'),
+                            item.get('time_in'),
+                            item.get('time_out'),
+                            item.get('status'),
+                            item.get('duration_minutes')
+                        ])
+                    csv_content = output.getvalue()
+                    output.close()
+                    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                    filename = f'attendance_report_{timestamp}.csv'
+                    response = make_response(csv_content)
+                    response.headers['Content-Disposition'] = f'attachment; filename={filename}'
+                    response.headers['Content-Type'] = 'text/csv; charset=utf-8'
+                    return response
+
+                workbook = Workbook()
+                ws = workbook.active
+                ws.title = 'Attendance'
+                headers = ['Attendance ID', 'Tên', 'Person ID', 'Track ID', 'Time In', 'Time Out', 'Trạng thái', 'Thời lượng (phút)']
+                ws.append(headers)
+
+                for item in data:
+                    ws.append([
+                        item.get('attendance_id'),
+                        item.get('person_name'),
+                        item.get('person_id'),
+                        item.get('track_id'),
+                        item.get('time_in'),
+                        item.get('time_out'),
+                        item.get('status'),
+                        item.get('duration_minutes')
+                    ])
+
+                # Auto width
+                for column_cells in ws.columns:
+                    length = max(len(str(cell.value)) if cell.value is not None else 0 for cell in column_cells)
+                    adjusted_width = min(length + 2, 40)
+                    ws.column_dimensions[column_cells[0].column_letter].width = adjusted_width
+
+                output = io.BytesIO()
+                workbook.save(output)
+                output.seek(0)
+                filename_parts = ['attendance_report']
+                if date_from:
+                    filename_parts.append(f"from_{date_from.strftime('%Y%m%d')}")
+                if date_to:
+                    filename_parts.append(f"to_{date_to.strftime('%Y%m%d')}")
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                filename_parts.append(timestamp)
+                filename = '_'.join(filename_parts) + '.xlsx'
+
+                return send_file(
+                    output,
+                    as_attachment=True,
+                    download_name=filename,
+                    mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                )
+
             return jsonify({
                 'success': True,
                 'data': data
+            })
+        except Exception as e:
+            return jsonify({'success': False, 'error': str(e)}), 500
+    
+    @app.route('/api/attendance/checkout-all', methods=['POST'])
+    def checkout_all_attendance():
+        """Check-out tất cả attendance đang hoạt động"""
+        try:
+            results = attendance_service.checkout_all_active()
+            return jsonify({
+                'success': True,
+                'data': {
+                    'checked_out': len(results)
+                }
+            })
+        except Exception as e:
+            return jsonify({'success': False, 'error': str(e)}), 500
+    
+    @app.route('/api/attendance/clear', methods=['POST'])
+    def clear_attendance_history():
+        """Xóa toàn bộ lịch sử attendance"""
+        try:
+            deleted = attendance_service.clear_all_history()
+            return jsonify({
+                'success': True,
+                'data': {
+                    'deleted': deleted
+                }
             })
         except Exception as e:
             return jsonify({'success': False, 'error': str(e)}), 500

@@ -280,8 +280,10 @@
             </div>
         </div>
 
-        <div style="text-align: center; margin-bottom: 20px;">
+        <div style="display:flex; gap:10px; justify-content:center; margin-bottom:20px; flex-wrap:wrap;">
             <button class="btn" id="refresh-btn">🔄 Làm mới tất cả dữ liệu</button>
+            <button class="btn" style="background:#198754;" id="export-excel-btn">📄 Xuất báo cáo (Excel)</button>
+            <button class="btn" style="background:#dc3545;" id="checkout-all-btn">⏱️ Check-out tất cả</button>
         </div>
 
         <div class="section">
@@ -362,6 +364,8 @@
             dailyStats: document.getElementById('daily-stats-content'),
             registerResult: document.getElementById('register-result'),
             refreshBtn: document.getElementById('refresh-btn'),
+            exportExcelBtn: document.getElementById('export-excel-btn'),
+            checkoutAllBtn: document.getElementById('checkout-all-btn'),
             lastUpdate: document.getElementById('last-update')
         };
 
@@ -659,10 +663,53 @@
             }
         });
 
-        el.refreshBtn.addEventListener('click', () => {
+        el.refreshBtn.addEventListener('click', async () => {
+            if (!confirm('Bạn có muốn làm mới lại dữ liệu hay không?')) {
+                return;
+            }
             el.refreshBtn.disabled = true;
-            state.lastHash = '';
-            loadAll();
+            try {
+                const res = await fetch(`${API}/attendance/clear`, { method: 'POST' });
+                const { success, data, error } = await res.json();
+                if (success) {
+                    showMessage(el.attendance, `✅ Đã xoá ${data?.deleted || 0} bản ghi.`, 'success');
+                } else {
+                    showMessage(el.attendance, `❌ Không thể xoá lịch sử: ${error}`, 'error');
+                }
+                state.lastHash = '';
+                await loadAll();
+            } catch (err) {
+                showMessage(el.attendance, `❌ Lỗi xoá lịch sử: ${err.message}`, 'error');
+            } finally {
+                el.refreshBtn.disabled = false;
+            }
+        });
+
+        el.exportExcelBtn.addEventListener('click', () => {
+            try {
+                const url = `${API}/export/attendance?format=excel`;
+                window.open(url, '_blank');
+            } catch (err) {
+                showMessage(el.attendance, `❌ Không thể xuất báo cáo: ${err.message}`, 'error');
+            }
+        });
+
+        el.checkoutAllBtn.addEventListener('click', async () => {
+            el.checkoutAllBtn.disabled = true;
+            try {
+                const res = await fetch(`${API}/attendance/checkout-all`, { method: 'POST' });
+                const { success, error, data } = await res.json();
+                if (success) {
+                    showMessage(el.attendance, `✅ Đã checkout ${data?.checked_out || 0} người.`, 'success');
+                    await loadAll();
+                } else {
+                    showMessage(el.attendance, `❌ Lỗi checkout tất cả: ${error}`, 'error');
+                }
+            } catch (err) {
+                showMessage(el.attendance, `❌ Lỗi checkout tất cả: ${err.message}`, 'error');
+            } finally {
+                el.checkoutAllBtn.disabled = false;
+            }
         });
 
         // Initialize

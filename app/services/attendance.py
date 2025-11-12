@@ -217,6 +217,107 @@ class AttendanceService:
             print(f"Error logging time out: {e}")
             return None
     
+    def checkout_all_active(self):
+        """Check-out tất cả attendance còn đang mở trong hệ thống (in-memory + database)."""
+        try:
+            results = []
+
+            # Khi có app context: cập nhật trực tiếp các bản ghi trong DB
+            app_ctx = getattr(self, 'app', None)
+            ctx = None
+            if app_ctx:
+                ctx = app_ctx.app_context()
+            else:
+                try:
+                    from flask import current_app
+                    ctx = current_app.app_context()
+                except RuntimeError:
+                    ctx = None
+
+            if ctx:
+                with ctx:
+                    open_attendances = Attendance.query.filter(Attendance.time_out.is_(None)).all()
+                    now = datetime.now()
+                    now = datetime.now()
+                    updated_attendances = []
+                    for att in open_attendances:
+                        att.time_out = now
+                        updated_attendances.append(att)
+
+                    if updated_attendances:
+                        try:
+                            db.session.commit()
+                        except Exception:
+                            db.session.rollback()
+                            updated_attendances = []
+
+                    for att in updated_attendances:
+                        person_name = att.person.name if getattr(att, 'person', None) else 'Unknown'
+                        try:
+                            duration_minutes = att.get_duration_minutes()
+                        except Exception:
+                            duration_minutes = 0
+
+                        self.log_attendance_event('time_out', {
+                            'track_id': att.track_id,
+                            'person_id': att.person_id,
+                            'person_name': person_name,
+                            'attendance_id': att.attendance_id,
+                            'duration_minutes': duration_minutes
+                        })
+
+                        # Sync lại in-memory nếu track_id tồn tại
+                        if att.track_id in self.active_attendances:
+                            try:
+                                del self.active_attendances[att.track_id]
+                            except Exception:
+                                pass
+
+                        results.append(att)
+
+            # Nếu còn bản ghi trong bộ nhớ (hoặc không có context), check-out thủ công
+            remaining_tracks = list(self.active_attendances.keys())
+            for track_id in remaining_tracks:
+                res = self.log_time_out(track_id)
+                if res:
+                    results.append(res)
+
+            return results
+        except Exception as e:
+            print(f"Error in checkout_all_active: {e}")
+            return []
+    
+    def clear_all_history(self):
+        """Xóa toàn bộ lịch sử attendance (DB và bộ nhớ)."""
+        deleted = 0
+        try:
+            app_ctx = getattr(self, 'app', None)
+            ctx = None
+            if app_ctx:
+                ctx = app_ctx.app_context()
+            else:
+                try:
+                    from flask import current_app
+                    ctx = current_app.app_context()
+                except RuntimeError:
+                    ctx = None
+
+            if ctx:
+                with ctx:
+                    try:
+                        deleted = Attendance.query.delete()
+                        db.session.commit()
+                    except Exception as e:
+                        db.session.rollback()
+                        print(f"Error clearing attendance table: {e}")
+                        deleted = 0
+
+            self.active_attendances.clear()
+            return deleted
+        except Exception as e:
+            print(f"Error in clear_all_history: {e}")
+            return deleted
+    
     def check_timeout_attendances(self, active_track_ids):
         """Kiểm tra và đóng các attendance đã timeout"""
         current_time = datetime.now()

@@ -10,7 +10,7 @@ import sys
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from config import Config
-from app.models.database import db, init_db
+from app.models.database import db, init_db, Person
 from app.services.face_recognition import FaceRecognitionService
 from app.services.tracking import TrackingService
 from app.services.attendance import AttendanceService
@@ -24,6 +24,15 @@ class FaceTrackingSystem:
         self.face_service = face_service or FaceRecognitionService()
         self.tracking_service = tracking_service or TrackingService()
         self.attendance_service = attendance_service or AttendanceService()
+        self.checkbox_states = {
+            'check_in': False,
+            'check_out': False
+        }
+        self.last_capture_time = None
+        self.window_name = 'Face Tracking System'
+        self.ui_regions = []
+        self.last_display_frame = None
+        self.last_tracking_results = []
         self.camera = None
         self.running = False
         self.frame_count = 0
@@ -35,6 +44,8 @@ class FaceTrackingSystem:
             self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, Config.CAMERA_WIDTH)
             self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, Config.CAMERA_HEIGHT)
             self.camera.set(cv2.CAP_PROP_FPS, Config.CAMERA_FPS)
+            cv2.namedWindow(self.window_name)
+            cv2.setMouseCallback(self.window_name, self.handle_mouse_event)
             
             if not self.camera.isOpened():
                 raise Exception("Cannot open camera")
@@ -66,9 +77,7 @@ class FaceTrackingSystem:
             person_id = result['person_id']
             name = result['name']
             
-            if track_id not in self.attendance_service.active_attendances:
-                self.attendance_service.log_time_in(track_id, person_id, name)
-            else:
+            if track_id in self.attendance_service.active_attendances:
                 # If an active attendance exists but person info was previously unknown
                 # and now we've recognized the person, update the active attendance
                 try:
@@ -85,6 +94,12 @@ class FaceTrackingSystem:
         
         # Thêm thông tin hệ thống
         self.draw_system_info(frame, tracking_results)
+        self.draw_ui_controls(frame)
+        self.last_tracking_results = tracking_results
+        try:
+            self.last_display_frame = frame.copy()
+        except Exception:
+            self.last_display_frame = frame
         
         return frame, tracking_results
     
@@ -104,6 +119,155 @@ class FaceTrackingSystem:
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
             y_offset += 25
     
+    def draw_ui_controls(self, frame):
+        """Vẽ checkbox và nút chức năng giả lập lên frame"""
+        checkbox_positions = {
+            'check_in': (10, 150),
+            'check_out': (10, 190)
+        }
+        regions = []
+        
+        for key, (x, y) in checkbox_positions.items():
+            checked = self.checkbox_states.get(key, False)
+            color = (0, 255, 0) if checked else (180, 180, 180)
+            cv2.rectangle(frame, (x, y), (x + 20, y + 20), color, 2)
+            regions.append({
+                'type': 'checkbox',
+                'key': key,
+                'rect': (x, y, x + 20, y + 20)
+            })
+            
+            if checked:
+                cv2.line(frame, (x + 4, y + 10), (x + 10, y + 16), color, 2)
+                cv2.line(frame, (x + 10, y + 16), (x + 18, y + 4), color, 2)
+            
+            label = "Check-in" if key == 'check_in' else "Check-out"
+            cv2.putText(frame, label, (x + 30, y + 15),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        
+        button_top_left = (10, 230)
+        button_bottom_right = (170, 270)
+        cv2.rectangle(frame, button_top_left, button_bottom_right, (50, 150, 255), 2)
+        cv2.putText(frame, "Xac nhan (C)", (button_top_left[0] + 10, button_top_left[1] + 25),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+        regions.append({
+            'type': 'button',
+            'key': 'capture',
+            'rect': (button_top_left[0], button_top_left[1], button_bottom_right[0], button_bottom_right[1])
+        })
+        
+        if self.last_capture_time:
+            cv2.putText(frame, f"Last confirm: {self.last_capture_time}",
+                       (10, 300), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                       (200, 200, 200), 1)
+        
+        self.ui_regions = regions
+    
+    def handle_mouse_event(self, event, x, y, flags, param):
+        """Xử lý click chuột trên cửa sổ video"""
+        if event != cv2.EVENT_LBUTTONDOWN:
+            return
+        for region in self.ui_regions:
+            x1, y1, x2, y2 = region['rect']
+            if x1 <= x <= x2 and y1 <= y <= y2:
+                if region['type'] == 'checkbox':
+                    key = region['key']
+                    new_state = not self.checkbox_states[key]
+                    self.set_checkbox_state(key, new_state)
+                elif region['type'] == 'button' and region['key'] == 'capture':
+                    self.capture_frame()
+                break
+    
+    def set_checkbox_state(self, key, value):
+        """Thiết lập trạng thái checkbox và đảm bảo loại trừ lẫn nhau"""
+        if key not in self.checkbox_states:
+            return
+        if value:
+            for other in self.checkbox_states:
+                self.checkbox_states[other] = (other == key)
+        else:
+            self.checkbox_states[key] = False
+        print(f"{key.replace('_', ' ').title()}: {self.checkbox_states[key]}")
+    
+    def capture_frame(self):
+        """Xác nhận hành động hiện tại"""
+        if self.last_display_frame is None:
+            print("No frame available to confirm")
+            return
+        try:
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            self.last_capture_time = timestamp
+            self.perform_attendance_action()
+        except Exception as e:
+            print(f"Confirmation failed: {e}")
+    
+    def get_primary_subject(self):
+        """Lấy người đang xuất hiện nổi bật nhất trong frame (đầu tiên có nhận diện)"""
+        if not self.last_tracking_results:
+            return None
+        
+        for result in self.last_tracking_results:
+            name = result.get('name')
+            if not name or name == Config.UNKNOWN_PERSON_LABEL:
+                continue
+            person_id = result.get('person_id')
+            if person_id is None and name:
+                person_id = self.lookup_person_id_by_name(name)
+                if person_id:
+                    result['person_id'] = person_id
+            return result
+        return None
+    
+    def lookup_person_id_by_name(self, name):
+        """Tra cứu person_id theo tên nếu có"""
+        if not name or name == Config.UNKNOWN_PERSON_LABEL:
+            return None
+        try:
+            app_ctx = getattr(self.attendance_service, 'app', None)
+            if app_ctx:
+                with app_ctx.app_context():
+                    person = Person.query.filter_by(name=name).first()
+                    return person.person_id if person else None
+            from flask import current_app
+            with current_app.app_context():
+                person = Person.query.filter_by(name=name).first()
+                return person.person_id if person else None
+        except Exception:
+            return None
+    
+    def perform_attendance_action(self):
+        """Thực hiện hành động check-in/check-out dựa trên trạng thái checkbox"""
+        action = None
+        if self.checkbox_states.get('check_in'):
+            action = 'check_in'
+        elif self.checkbox_states.get('check_out'):
+            action = 'check_out'
+        
+        if not action:
+            print("No action selected (check-in/check-out)")
+            return
+        
+        subject = self.get_primary_subject()
+        if not subject:
+            print("No recognized person available for attendance action")
+            return
+        
+        track_id = subject.get('track_id')
+        person_id = subject.get('person_id')
+        name = subject.get('name')
+        
+        try:
+            if action == 'check_in':
+                attendance = self.attendance_service.log_time_in(track_id, person_id, name)
+                if attendance:
+                    print(f"Manual check-in recorded for {name or person_id or track_id}")
+            elif action == 'check_out':
+                attendance = self.attendance_service.log_time_out(track_id)
+                if attendance:
+                    print(f"Manual check-out recorded for {name or person_id or track_id}")
+        except Exception as e:
+            print(f"Attendance action failed: {e}")
+    
     def run_camera_loop(self):
         """Vòng lặp chính của camera"""
         print("Starting camera loop...")
@@ -119,7 +283,7 @@ class FaceTrackingSystem:
                 processed_frame, tracking_results = self.process_frame(frame)
                 
                 # Hiển thị frame
-                cv2.imshow('Face Tracking System', processed_frame)
+                cv2.imshow(self.window_name, processed_frame)
                 
                 # Kiểm tra phím thoát
                 key = cv2.waitKey(1) & 0xFF
@@ -130,6 +294,14 @@ class FaceTrackingSystem:
                     print("Reset tracking")
                     self.tracking_service.reset_tracking()
                     self.attendance_service.active_attendances.clear()
+                elif key == ord('i'):
+                    new_state = not self.checkbox_states['check_in']
+                    self.set_checkbox_state('check_in', new_state)
+                elif key == ord('o'):
+                    new_state = not self.checkbox_states['check_out']
+                    self.set_checkbox_state('check_out', new_state)
+                elif key == ord('c'):
+                    self.capture_frame()
                 
             except Exception as e:
                 print(f"Error processing frame: {e}")
@@ -219,6 +391,18 @@ def main():
             tracking_service=tracking_service,
             attendance_service=attendance_service
         )
+
+        try:
+            if system.tracking_service:
+                system.tracking_service.reset_tracking()
+        except Exception:
+            pass
+
+        try:
+            if system.attendance_service:
+                system.attendance_service.active_attendances.clear()
+        except Exception:
+            pass
         
         system.start()
         
