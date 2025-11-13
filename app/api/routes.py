@@ -284,6 +284,7 @@ def create_app(config_name='default'):
 
             # Save images and compute encodings
             idx = 0
+            failed_files = []
             for f in files[:3]:
                 if f and f.filename:
                     idx += 1
@@ -299,12 +300,20 @@ def create_app(config_name='default'):
                             encodings.append(enc)
                             print(f"Successfully processed {filename}, encoding shape: {enc.shape}")
                         else:
+                            failed_files.append(filename)
                             print(f"No face detected in {filename}")
                     except Exception as e:
+                        failed_files.append(filename)
                         print(f"Error processing {filename}: {e}")
+                        import traceback
+                        traceback.print_exc()
 
             if not encodings:
-                return jsonify({'success': False, 'error': 'No valid faces detected in uploaded images'}), 400
+                error_msg = 'No valid faces detected in uploaded images'
+                if failed_files:
+                    error_msg += f'. Failed files: {", ".join(failed_files)}'
+                error_msg += '. Please ensure images contain clear, front-facing faces with good lighting.'
+                return jsonify({'success': False, 'error': error_msg}), 400
 
             # Create or update person record
             person = Person.query.filter_by(name=name).first()

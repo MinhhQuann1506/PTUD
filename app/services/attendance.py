@@ -22,6 +22,256 @@ class AttendanceService:
         # }
         self.active_attendances = {}
     
+    def log_time_in_manual(self, track_id, person_id=None, person_name=None):
+        """Ghi log thời gian vào thủ công - chỉ tạo mới nếu user chưa có attendance đang mở"""
+        try:
+            try:
+                app_ctx = getattr(self, 'app', None)
+                if app_ctx:
+                    with app_ctx.app_context():
+                        # Kiểm tra xem user đã có attendance đang mở (time_out = null) chưa
+                        existing_attendance = None
+                        if person_id:
+                            existing_attendance = Attendance.query.filter(
+                                Attendance.person_id == person_id,
+                                Attendance.time_out.is_(None)
+                            ).first()
+                        elif person_name:
+                            # Tìm person_id từ name
+                            person = Person.query.filter_by(name=person_name).first()
+                            if person:
+                                existing_attendance = Attendance.query.filter(
+                                    Attendance.person_id == person.person_id,
+                                    Attendance.time_out.is_(None)
+                                ).first()
+                        
+                        # Nếu đã có attendance đang mở, return attendance đó
+                        if existing_attendance:
+                            print(f"User {person_name or person_id} already has an open attendance. Skipping check-in.")
+                            return {
+                                'attendance_id': existing_attendance.attendance_id,
+                                'person_id': existing_attendance.person_id,
+                                'person_name': existing_attendance.person.name if getattr(existing_attendance, 'person', None) else person_name,
+                                'track_id': existing_attendance.track_id,
+                                'time_in': existing_attendance.time_in,
+                                'time_out': existing_attendance.time_out,
+                                'status': existing_attendance.status
+                            }
+                        
+                        # Tạo attendance record mới
+                        attendance = Attendance(
+                            person_id=person_id,
+                            track_id=track_id,
+                            time_in=datetime.now(),
+                            status='Present'
+                        )
+
+                        db.session.add(attendance)
+                        db.session.commit()
+
+                        attendance_data = {
+                            'attendance_id': attendance.attendance_id,
+                            'person_id': attendance.person_id,
+                            'person_name': attendance.person.name if getattr(attendance, 'person', None) else person_name,
+                            'track_id': track_id,
+                            'time_in': attendance.time_in,
+                            'time_out': attendance.time_out,
+                            'status': attendance.status
+                        }
+
+                        self.log_attendance_event('time_in_manual', {
+                            'track_id': track_id,
+                            'person_id': person_id,
+                            'person_name': person_name,
+                            'attendance_id': attendance.attendance_id
+                        })
+
+                        print(f"Manual time in logged: {person_name or 'Unknown'} (Track ID: {track_id})")
+                        return attendance_data
+                else:
+                    from flask import current_app
+                    with current_app.app_context():
+                        # Kiểm tra xem user đã có attendance đang mở chưa
+                        existing_attendance = None
+                        if person_id:
+                            existing_attendance = Attendance.query.filter(
+                                Attendance.person_id == person_id,
+                                Attendance.time_out.is_(None)
+                            ).first()
+                        elif person_name:
+                            person = Person.query.filter_by(name=person_name).first()
+                            if person:
+                                existing_attendance = Attendance.query.filter(
+                                    Attendance.person_id == person.person_id,
+                                    Attendance.time_out.is_(None)
+                                ).first()
+                        
+                        if existing_attendance:
+                            print(f"User {person_name or person_id} already has an open attendance. Skipping check-in.")
+                            return {
+                                'attendance_id': existing_attendance.attendance_id,
+                                'person_id': existing_attendance.person_id,
+                                'person_name': existing_attendance.person.name if getattr(existing_attendance, 'person', None) else person_name,
+                                'track_id': existing_attendance.track_id,
+                                'time_in': existing_attendance.time_in,
+                                'time_out': existing_attendance.time_out,
+                                'status': existing_attendance.status
+                            }
+                        
+                        attendance = Attendance(
+                            person_id=person_id,
+                            track_id=track_id,
+                            time_in=datetime.now(),
+                            status='Present'
+                        )
+
+                        db.session.add(attendance)
+                        db.session.commit()
+
+                        attendance_data = {
+                            'attendance_id': attendance.attendance_id,
+                            'person_id': attendance.person_id,
+                            'person_name': attendance.person.name if getattr(attendance, 'person', None) else person_name,
+                            'track_id': track_id,
+                            'time_in': attendance.time_in,
+                            'time_out': attendance.time_out,
+                            'status': attendance.status
+                        }
+
+                        self.log_attendance_event('time_in_manual', {
+                            'track_id': track_id,
+                            'person_id': person_id,
+                            'person_name': person_name,
+                            'attendance_id': attendance.attendance_id
+                        })
+
+                        print(f"Manual time in logged: {person_name or 'Unknown'} (Track ID: {track_id})")
+                        return attendance_data
+            except RuntimeError:
+                attendance_data = {
+                    'attendance_id': None,
+                    'track_id': track_id,
+                    'person_id': person_id,
+                    'person_name': person_name,
+                    'time_in': datetime.now(),
+                    'time_out': None,
+                    'status': 'Present'
+                }
+                print(f"Manual time in logged (memory only): {person_name or 'Unknown'} (Track ID: {track_id})")
+                return attendance_data
+            
+        except Exception as e:
+            print(f"Error logging manual time in: {e}")
+            return None
+    
+    def log_time_out_manual(self, person_id=None, person_name=None):
+        """Check-out user dựa vào person_id hoặc name (không cần track_id, user có thể không có mặt trên camera)"""
+        try:
+            try:
+                app_ctx = getattr(self, 'app', None)
+                if app_ctx:
+                    with app_ctx.app_context():
+                        # Tìm attendance đang mở (time_out = null) của user
+                        existing_attendance = None
+                        if person_id:
+                            existing_attendance = Attendance.query.filter(
+                                Attendance.person_id == person_id,
+                                Attendance.time_out.is_(None)
+                            ).first()
+                        elif person_name:
+                            person = Person.query.filter_by(name=person_name).first()
+                            if person:
+                                existing_attendance = Attendance.query.filter(
+                                    Attendance.person_id == person.person_id,
+                                    Attendance.time_out.is_(None)
+                                ).first()
+                        
+                        if not existing_attendance:
+                            print(f"No open attendance found for user {person_name or person_id}")
+                            return None
+                        
+                        # Update time_out
+                        existing_attendance.time_out = datetime.now()
+                        db.session.commit()
+                        
+                        person_name = existing_attendance.person.name if getattr(existing_attendance, 'person', None) else person_name
+                        try:
+                            duration_minutes = existing_attendance.get_duration_minutes()
+                        except Exception:
+                            duration_minutes = 0
+                        
+                        self.log_attendance_event('time_out_manual', {
+                            'person_id': existing_attendance.person_id,
+                            'person_name': person_name,
+                            'attendance_id': existing_attendance.attendance_id,
+                            'duration_minutes': duration_minutes
+                        })
+                        
+                        print(f"Manual time out logged: {person_name} (Attendance ID: {existing_attendance.attendance_id})")
+                        return {
+                            'attendance_id': existing_attendance.attendance_id,
+                            'person_id': existing_attendance.person_id,
+                            'person_name': person_name,
+                            'track_id': existing_attendance.track_id,
+                            'time_in': existing_attendance.time_in,
+                            'time_out': existing_attendance.time_out,
+                            'status': existing_attendance.status
+                        }
+                else:
+                    from flask import current_app
+                    with current_app.app_context():
+                        existing_attendance = None
+                        if person_id:
+                            existing_attendance = Attendance.query.filter(
+                                Attendance.person_id == person_id,
+                                Attendance.time_out.is_(None)
+                            ).first()
+                        elif person_name:
+                            person = Person.query.filter_by(name=person_name).first()
+                            if person:
+                                existing_attendance = Attendance.query.filter(
+                                    Attendance.person_id == person.person_id,
+                                    Attendance.time_out.is_(None)
+                                ).first()
+                        
+                        if not existing_attendance:
+                            print(f"No open attendance found for user {person_name or person_id}")
+                            return None
+                        
+                        existing_attendance.time_out = datetime.now()
+                        db.session.commit()
+                        
+                        person_name = existing_attendance.person.name if getattr(existing_attendance, 'person', None) else person_name
+                        try:
+                            duration_minutes = existing_attendance.get_duration_minutes()
+                        except Exception:
+                            duration_minutes = 0
+                        
+                        self.log_attendance_event('time_out_manual', {
+                            'person_id': existing_attendance.person_id,
+                            'person_name': person_name,
+                            'attendance_id': existing_attendance.attendance_id,
+                            'duration_minutes': duration_minutes
+                        })
+                        
+                        print(f"Manual time out logged: {person_name} (Attendance ID: {existing_attendance.attendance_id})")
+                        return {
+                            'attendance_id': existing_attendance.attendance_id,
+                            'person_id': existing_attendance.person_id,
+                            'person_name': person_name,
+                            'track_id': existing_attendance.track_id,
+                            'time_in': existing_attendance.time_in,
+                            'time_out': existing_attendance.time_out,
+                            'status': existing_attendance.status
+                        }
+            except RuntimeError:
+                print(f"No app context for manual time out")
+                return None
+            
+        except Exception as e:
+            print(f"Error logging manual time out: {e}")
+            return None
+    
     def log_time_in(self, track_id, person_id=None, person_name=None):
         """Ghi log thời gian vào"""
         try:

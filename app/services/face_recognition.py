@@ -466,16 +466,69 @@ class FaceRecognitionService:
                 except Exception:
                     image = None
 
-            if image is not None:
-                gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-                faces = self.face_cascade.detectMultiScale(gray, 1.1, 4)
+            if image is None:
+                print(f"Failed to load image: {image_path}")
+                return None
+
+            # Convert to grayscale
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            
+            # Try multiple detection parameters for better face detection
+            # First try: standard parameters
+            faces = self.face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=4, minSize=(30, 30))
+            
+            # If no faces found, try more sensitive parameters
+            if len(faces) == 0:
+                faces = self.face_cascade.detectMultiScale(gray, scaleFactor=1.05, minNeighbors=3, minSize=(20, 20))
+            
+            # If still no faces, try even more sensitive parameters
+            if len(faces) == 0:
+                faces = self.face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=2, minSize=(30, 30))
+            
+            # If still no faces, try with image enhancement (CLAHE)
+            if len(faces) == 0:
+                clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+                enhanced_gray = clahe.apply(gray)
+                faces = self.face_cascade.detectMultiScale(enhanced_gray, scaleFactor=1.1, minNeighbors=3, minSize=(30, 30))
                 if len(faces) > 0:
-                    x, y, w, h = faces[0]
-                    face_roi = gray[y:y+h, x:x+w]
-                    return self._create_face_encoding(face_roi)
-            return None
+                    gray = enhanced_gray
+            
+            # If still no faces, try resizing image (sometimes helps with detection)
+            if len(faces) == 0:
+                # Resize if image is too large or too small
+                h, w = gray.shape
+                if w > 2000 or h > 2000:
+                    scale = min(2000.0 / w, 2000.0 / h)
+                    new_w = int(w * scale)
+                    new_h = int(h * scale)
+                    resized = cv2.resize(gray, (new_w, new_h))
+                    faces = self.face_cascade.detectMultiScale(resized, scaleFactor=1.1, minNeighbors=3, minSize=(30, 30))
+                    if len(faces) > 0:
+                        gray = resized
+                elif w < 200 or h < 200:
+                    scale = max(200.0 / w, 200.0 / h)
+                    new_w = int(w * scale)
+                    new_h = int(h * scale)
+                    resized = cv2.resize(gray, (new_w, new_h))
+                    faces = self.face_cascade.detectMultiScale(resized, scaleFactor=1.1, minNeighbors=3, minSize=(30, 30))
+                    if len(faces) > 0:
+                        gray = resized
+            
+            if len(faces) > 0:
+                # Use the largest face if multiple faces detected
+                if len(faces) > 1:
+                    faces = sorted(faces, key=lambda x: x[2] * x[3], reverse=True)
+                x, y, w, h = faces[0]
+                face_roi = gray[y:y+h, x:x+w]
+                print(f"Face detected in {image_path}: size {w}x{h}")
+                return self._create_face_encoding(face_roi)
+            else:
+                print(f"No face detected in {image_path} after trying multiple methods")
+                return None
         except Exception as e:
             print(f"Error getting face encoding from {image_path}: {e}")
+            import traceback
+            traceback.print_exc()
             return None
     
     def draw_face_boxes(self, frame, face_results):

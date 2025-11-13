@@ -218,6 +218,24 @@ class FaceTrackingSystem:
             return result
         return None
     
+    def get_all_recognized_subjects(self):
+        """Lấy TẤT CẢ người đang được nhận diện trong frame"""
+        if not self.last_tracking_results:
+            return []
+        
+        subjects = []
+        for result in self.last_tracking_results:
+            name = result.get('name')
+            if not name or name == Config.UNKNOWN_PERSON_LABEL:
+                continue
+            person_id = result.get('person_id')
+            if person_id is None and name:
+                person_id = self.lookup_person_id_by_name(name)
+                if person_id:
+                    result['person_id'] = person_id
+            subjects.append(result)
+        return subjects
+    
     def lookup_person_id_by_name(self, name):
         """Tra cứu person_id theo tên nếu có"""
         if not name or name == Config.UNKNOWN_PERSON_LABEL:
@@ -247,24 +265,38 @@ class FaceTrackingSystem:
             print("No action selected (check-in/check-out)")
             return
         
-        subject = self.get_primary_subject()
-        if not subject:
-            print("No recognized person available for attendance action")
-            return
-        
-        track_id = subject.get('track_id')
-        person_id = subject.get('person_id')
-        name = subject.get('name')
-        
         try:
             if action == 'check_in':
-                attendance = self.attendance_service.log_time_in(track_id, person_id, name)
-                if attendance:
-                    print(f"Manual check-in recorded for {name or person_id or track_id}")
+                # Lấy TẤT CẢ users đang được nhận diện
+                subjects = self.get_all_recognized_subjects()
+                if not subjects:
+                    print("No recognized person available for check-in")
+                    return
+                
+                # Tạo attendance mới cho TẤT CẢ users
+                for subject in subjects:
+                    track_id = subject.get('track_id')
+                    person_id = subject.get('person_id')
+                    name = subject.get('name')
+                    # Tạo attendance mới với force_new=True để không check active_attendances
+                    attendance = self.attendance_service.log_time_in_manual(track_id, person_id, name)
+                    if attendance:
+                        print(f"Manual check-in recorded for {name or person_id or track_id}")
             elif action == 'check_out':
-                attendance = self.attendance_service.log_time_out(track_id)
+                # Check-out user đang được nhận diện trong frame (hoặc có thể checkout user khác)
+                subject = self.get_primary_subject()
+                if not subject:
+                    print("No recognized person available for check-out")
+                    return
+                
+                person_id = subject.get('person_id')
+                name = subject.get('name')
+                # Dùng log_time_out_manual để checkout dựa vào person_id hoặc name
+                attendance = self.attendance_service.log_time_out_manual(person_id=person_id, person_name=name)
                 if attendance:
-                    print(f"Manual check-out recorded for {name or person_id or track_id}")
+                    print(f"Manual check-out recorded for {name or person_id}")
+                else:
+                    print(f"Failed to check-out: No open attendance found for {name or person_id}")
         except Exception as e:
             print(f"Attendance action failed: {e}")
     
